@@ -11,9 +11,7 @@ import {
   defineAsyncComponent,
   defineComponent
 } from '@vue/runtime-dom'
-import { renderToString } from '@vue/server-renderer'
-import { mockWarn } from '@vue/shared'
-import { SSRContext } from 'packages/server-renderer/src/renderToString'
+import { renderToString, SSRContext } from '@vue/server-renderer'
 
 function mountWithHydration(html: string, render: () => any) {
   const container = document.createElement('div')
@@ -35,8 +33,6 @@ const triggerEvent = (type: string, el: Element) => {
 }
 
 describe('SSR hydration', () => {
-  mockWarn()
-
   beforeEach(() => {
     document.body.innerHTML = ''
   })
@@ -510,8 +506,10 @@ describe('SSR hydration', () => {
     const App = {
       template: `
       <Suspense @resolve="done">
-        <AsyncChild :n="1" />
-        <AsyncChild :n="2" />
+        <div>
+          <AsyncChild :n="1" />
+          <AsyncChild :n="2" />
+        </div>
       </Suspense>`,
       components: {
         AsyncChild
@@ -525,7 +523,7 @@ describe('SSR hydration', () => {
     // server render
     container.innerHTML = await renderToString(h(App))
     expect(container.innerHTML).toMatchInlineSnapshot(
-      `"<!--[--><span>1</span><span>2</span><!--]-->"`
+      `"<div><span>1</span><span>2</span></div>"`
     )
     // reset asyncDeps from ssr
     asyncDeps.length = 0
@@ -541,17 +539,23 @@ describe('SSR hydration', () => {
 
     // should flush buffered effects
     expect(mountedCalls).toMatchObject([1, 2])
-    expect(container.innerHTML).toMatch(`<span>1</span><span>2</span>`)
+    expect(container.innerHTML).toMatch(
+      `<div><span>1</span><span>2</span></div>`
+    )
 
     const span1 = container.querySelector('span')!
     triggerEvent('click', span1)
     await nextTick()
-    expect(container.innerHTML).toMatch(`<span>2</span><span>2</span>`)
+    expect(container.innerHTML).toMatch(
+      `<div><span>2</span><span>2</span></div>`
+    )
 
     const span2 = span1.nextSibling as Element
     triggerEvent('click', span2)
     await nextTick()
-    expect(container.innerHTML).toMatch(`<span>2</span><span>3</span>`)
+    expect(container.innerHTML).toMatch(
+      `<div><span>2</span><span>3</span></div>`
+    )
   })
 
   test('async component', async () => {
@@ -611,6 +615,20 @@ describe('SSR hydration', () => {
     // should be hydrated now
     triggerEvent('click', container.querySelector('button')!)
     expect(spy).toHaveBeenCalled()
+  })
+
+  test('SVG as a mount container', () => {
+    const svgContainer = document.createElement('svg')
+    svgContainer.innerHTML = '<g></g>'
+    const app = createSSRApp({
+      render: () => h('g')
+    })
+
+    expect(
+      (app.mount(svgContainer).$.subTree as VNode<Node, Element> & {
+        el: Element
+      }).el instanceof SVGElement
+    )
   })
 
   describe('mismatch handling', () => {

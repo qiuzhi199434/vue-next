@@ -1,10 +1,7 @@
 import { createApp, h, Suspense } from 'vue'
 import { renderToString } from '../src/renderToString'
-import { mockWarn } from '@vue/shared'
 
 describe('SSR Suspense', () => {
-  mockWarn()
-
   const ResolvingAsync = {
     async setup() {
       return () => h('div', 'async')
@@ -42,6 +39,9 @@ describe('SSR Suspense', () => {
 
     expect(await renderToString(createApp(Comp))).toBe(`<!---->`)
     expect('Uncaught error in async setup').toHaveBeenWarned()
+    expect(
+      'Unhandled error during execution of setup function'
+    ).toHaveBeenWarned()
     expect('missing template').toHaveBeenWarned()
   })
 
@@ -74,6 +74,9 @@ describe('SSR Suspense', () => {
       `<div><div>async</div><!----></div>`
     )
     expect('Uncaught error in async setup').toHaveBeenWarned()
+    expect(
+      'Unhandled error during execution of setup function'
+    ).toHaveBeenWarned()
     expect('missing template or render function').toHaveBeenWarned()
   })
 
@@ -97,6 +100,9 @@ describe('SSR Suspense', () => {
       `<div><div>async</div><div><!----></div></div>`
     )
     expect('Uncaught error in async setup').toHaveBeenWarned()
+    expect(
+      'Unhandled error during execution of setup function'
+    ).toHaveBeenWarned()
     expect('missing template').toHaveBeenWarned()
   })
 
@@ -120,6 +126,9 @@ describe('SSR Suspense', () => {
       `<div><!----><div><div>async</div></div></div>`
     )
     expect('Uncaught error in async setup').toHaveBeenWarned()
+    expect(
+      'Unhandled error during execution of setup function'
+    ).toHaveBeenWarned()
     expect('missing template').toHaveBeenWarned()
   })
 })

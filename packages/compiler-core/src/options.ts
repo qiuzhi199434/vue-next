@@ -10,25 +10,25 @@ import { ParserPlugin } from '@babel/parser'
 
 export interface ParserOptions {
   /**
-   * e.g. platform native elements, e.g. <div> for browsers
+   * e.g. platform native elements, e.g. `<div>` for browsers
    */
   isNativeTag?: (tag: string) => boolean
   /**
-   * e.g. native elements that can self-close, e.g. <img>, <br>, <hr>
+   * e.g. native elements that can self-close, e.g. `<img>`, `<br>`, `<hr>`
    */
   isVoidTag?: (tag: string) => boolean
   /**
-   * e.g. elements that should preserve whitespace inside, e.g. <pre>
+   * e.g. elements that should preserve whitespace inside, e.g. `<pre>`
    */
   isPreTag?: (tag: string) => boolean
   /**
-   * Platform-specific built-in components e.g. <Transition>
+   * Platform-specific built-in components e.g. `<Transition>`
    */
   isBuiltInComponent?: (tag: string) => symbol | void
   /**
    * Separate option for end users to extend the native elements list
    */
-  isCustomElement?: (tag: string) => boolean
+  isCustomElement?: (tag: string) => boolean | void
   /**
    * Get tag namespace
    */
@@ -49,6 +49,10 @@ export interface ParserOptions {
    */
   decodeEntities?: (rawText: string, asAttr: boolean) => string
   onError?: (error: CompilerError) => void
+  /**
+   * Keep comments in the templates AST, even in production
+   */
+  comments?: boolean
 }
 
 export type HoistTransform = (
@@ -57,9 +61,84 @@ export type HoistTransform = (
   parent: ParentNode
 ) => void
 
-export interface TransformOptions {
+export const enum BindingTypes {
   /**
-   * An array of node trasnforms to be applied to every AST node.
+   * returned from data()
+   */
+  DATA = 'data',
+  /**
+   * decalred as a prop
+   */
+  PROPS = 'props',
+  /**
+   * a let binding (may or may not be a ref)
+   */
+  SETUP_LET = 'setup-let',
+  /**
+   * a const binding that can never be a ref.
+   * these bindings don't need `unref()` calls when processed in inlined
+   * template expressions.
+   */
+  SETUP_CONST = 'setup-const',
+  /**
+   * a const binding that may be a ref.
+   */
+  SETUP_MAYBE_REF = 'setup-maybe-ref',
+  /**
+   * bindings that are guaranteed to be refs
+   */
+  SETUP_REF = 'setup-ref',
+  /**
+   * declared by other options, e.g. computed, inject
+   */
+  OPTIONS = 'options'
+}
+
+export interface BindingMetadata {
+  [key: string]: BindingTypes | undefined
+}
+
+interface SharedTransformCodegenOptions {
+  /**
+   * Transform expressions like {{ foo }} to `_ctx.foo`.
+   * If this option is false, the generated code will be wrapped in a
+   * `with (this) { ... }` block.
+   * - This is force-enabled in module mode, since modules are by default strict
+   * and cannot use `with`
+   * @default mode === 'module'
+   */
+  prefixIdentifiers?: boolean
+  /**
+   * Generate SSR-optimized render functions instead.
+   * The resulting function must be attached to the component via the
+   * `ssrRender` option instead of `render`.
+   */
+  ssr?: boolean
+  /**
+   * Optional binding metadata analyzed from script - used to optimize
+   * binding access when `prefixIdentifiers` is enabled.
+   */
+  bindingMetadata?: BindingMetadata
+  /**
+   * Compile the function for inlining inside setup().
+   * This allows the function to directly access setup() local bindings.
+   */
+  inline?: boolean
+  /**
+   * Indicates that transforms and codegen should try to output valid TS code
+   */
+  isTS?: boolean
+  /**
+   * Filename for source map generation.
+   * Also used for self-recursive reference in templates
+   * @default 'template.vue.html'
+   */
+  filename?: string
+}
+
+export interface TransformOptions extends SharedTransformCodegenOptions {
+  /**
+   * An array of node transforms to be applied to every AST node.
    */
   nodeTransforms?: NodeTransform[]
   /**
@@ -79,6 +158,10 @@ export interface TransformOptions {
    * for them.
    */
   isBuiltInComponent?: (tag: string) => symbol | void
+  /**
+   * Used by some transforms that expects only native elements
+   */
+  isCustomElement?: (tag: string) => boolean | void
   /**
    * Transform expressions like {{ foo }} to `_ctx.foo`.
    * If this option is false, the generated code will be wrapped in a
@@ -117,15 +200,21 @@ export interface TransformOptions {
    */
   scopeId?: string | null
   /**
-   * Generate SSR-optimized render functions instead.
-   * The resulting funciton must be attached to the component via the
-   * `ssrRender` option instead of `render`.
+   * Indicates this SFC template has used :slotted in its styles
+   * Defaults to `true` for backwards compatibility - SFC tooling should set it
+   * to `false` if no `:slotted` usage is detected in `<style>`
    */
-  ssr?: boolean
+  slotted?: boolean
+  /**
+   * SFC `<style vars>` injection string
+   * Should already be an object expression, e.g. `{ 'xxxx-color': color }`
+   * needed to render inline CSS variables on component root
+   */
+  ssrCssVars?: string
   onError?: (error: CompilerError) => void
 }
 
-export interface CodegenOptions {
+export interface CodegenOptions extends SharedTransformCodegenOptions {
   /**
    * - `module` mode will generate ES module import statements for helpers
    * and export the render function as the default export.
@@ -142,11 +231,6 @@ export interface CodegenOptions {
    */
   sourceMap?: boolean
   /**
-   * Filename for source map generation.
-   * @default 'template.vue.html'
-   */
-  filename?: string
-  /**
    * SFC scoped styles ID
    */
   scopeId?: string | null
@@ -155,7 +239,7 @@ export interface CodegenOptions {
    * (only used for webpack code-split)
    * @default false
    */
-  optimizeBindings?: boolean
+  optimizeImports?: boolean
   /**
    * Customize where to import runtime helpers from.
    * @default 'vue'
@@ -167,10 +251,6 @@ export interface CodegenOptions {
    * @default 'Vue'
    */
   runtimeGlobalName?: string
-  // we need to know this during codegen to generate proper preambles
-  prefixIdentifiers?: boolean
-  // generate ssr-specific code?
-  ssr?: boolean
 }
 
 export type CompilerOptions = ParserOptions & TransformOptions & CodegenOptions

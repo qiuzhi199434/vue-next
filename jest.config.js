@@ -1,5 +1,6 @@
 module.exports = {
   preset: 'ts-jest',
+  setupFilesAfterEnv: ['./scripts/setupJestEnv.ts'],
   globals: {
     __DEV__: true,
     __TEST__: true,
@@ -9,8 +10,9 @@ module.exports = {
     __ESM_BUNDLER__: true,
     __ESM_BROWSER__: false,
     __NODE_JS__: true,
-    __FEATURE_OPTIONS__: true,
-    __FEATURE_SUSPENSE__: true
+    __FEATURE_OPTIONS_API__: true,
+    __FEATURE_SUSPENSE__: true,
+    __FEATURE_PROD_DEVTOOLS__: false
   },
   coverageDirectory: 'coverage',
   coverageReporters: ['html', 'lcov', 'text'],
@@ -20,6 +22,7 @@ module.exports = {
     '!packages/template-explorer/**',
     '!packages/size-check/**',
     '!packages/runtime-core/src/profiling.ts',
+    '!packages/runtime-core/src/customFormatter.ts',
     // DOM transitions are tested via e2e so no coverage is collected
     '!packages/runtime-dom/src/components/Transition*',
     // only called in browsers

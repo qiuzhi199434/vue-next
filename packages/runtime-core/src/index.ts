@@ -8,6 +8,7 @@ export {
   readonly,
   // utilities
   unref,
+  proxyRefs,
   isRef,
   toRef,
   toRefs,
@@ -42,6 +43,7 @@ export { provide, inject } from './apiInject'
 export { nextTick } from './scheduler'
 export { defineComponent } from './apiDefineComponent'
 export { defineAsyncComponent } from './apiAsyncComponent'
+export { defineProps, defineEmit, useContext } from './apiSetupHelpers'
 
 // Advanced API ----------------------------------------------------------------
 
@@ -65,8 +67,6 @@ export {
 } from './components/BaseTransition'
 // For using custom directives
 export { withDirectives } from './directives'
-// SFC CSS Modules
-export { useCSSModule } from './helpers/useCssModule'
 // SSR context
 export { useSSRContext, ssrContextKey } from './helpers/useSsrContext'
 
@@ -87,14 +87,19 @@ export {
   resolveDynamicComponent
 } from './helpers/resolveAssets'
 // For integration with runtime compiler
-export { registerRuntimeCompiler } from './component'
+export { registerRuntimeCompiler, isRuntimeOnly } from './component'
 export {
   useTransitionState,
   resolveTransitionHooks,
-  setTransitionHooks
+  setTransitionHooks,
+  getTransitionRawChildren
 } from './components/BaseTransition'
+export { initCustomFormatter } from './customFormatter'
 
-// Types -----------------------------------------------------------------------
+// For devtools
+export { devtools, setDevtoolsHook } from './devtools'
+
+// Types -------------------------------------------------------------------------
 
 import { VNode } from './vnode'
 import { ComponentInternalInstance } from './component'
@@ -121,9 +126,12 @@ export {
   TriggerOpTypes,
   Ref,
   ComputedRef,
+  WritableComputedRef,
   UnwrapRef,
+  ShallowUnwrapRef,
   WritableComputedOptions,
-  ToRefs
+  ToRefs,
+  DeepReadonly
 } from '@vue/reactivity'
 export {
   // types
@@ -153,23 +161,31 @@ export {
 } from './vnode'
 export {
   Component,
+  ConcreteComponent,
   FunctionalComponent,
   ComponentInternalInstance,
-  SetupContext
+  SetupContext,
+  ComponentCustomProps,
+  AllowedComponentProps
 } from './component'
+export { DefineComponent } from './apiDefineComponent'
 export {
   ComponentOptions,
+  ComponentOptionsMixin,
   ComponentOptionsWithoutProps,
   ComponentOptionsWithObjectProps,
   ComponentOptionsWithArrayProps,
   ComponentCustomOptions,
   ComponentOptionsBase,
-  RenderFunction
+  RenderFunction,
+  MethodOptions,
+  ComputedOptions
 } from './componentOptions'
+export { EmitsOptions, ObjectEmitsOptions } from './componentEmits'
 export {
   ComponentPublicInstance,
   ComponentCustomProperties
-} from './componentProxy'
+} from './componentPublicInstance'
 export {
   Renderer,
   RendererNode,
@@ -185,7 +201,8 @@ export {
   PropType,
   ComponentPropsOptions,
   ComponentObjectPropsOptions,
-  ExtractPropTypes
+  ExtractPropTypes,
+  ExtractDefaultPropTypes
 } from './componentProps'
 export {
   Directive,
@@ -210,12 +227,11 @@ export { HMRRuntime } from './hmr'
 
 // For compiler generated code
 // should sync with '@vue/compiler-core/src/runtimeConstants.ts'
-export { withCtx } from './helpers/withRenderContext'
+export { withCtx, setScopeId } from './componentRenderContext'
 export { renderList } from './helpers/renderList'
 export { toHandlers } from './helpers/toHandlers'
 export { renderSlot } from './helpers/renderSlot'
 export { createSlots } from './helpers/createSlots'
-export { pushScopeId, popScopeId, withScopeId } from './helpers/scopeId'
 export {
   openBlock,
   createBlock,
@@ -224,19 +240,12 @@ export {
   createCommentVNode,
   createStaticVNode
 } from './vnode'
-
-// a bit of ceremony to mark these internal only here because we need to include
-// them in @vue/shared's typings
-import { toDisplayString, camelize } from '@vue/shared'
-/**
- * @private
- */
-const _toDisplayString = toDisplayString
-/**
- * @private
- */
-const _camelize = camelize
-export { _toDisplayString as toDisplayString, _camelize as camelize }
+export {
+  toDisplayString,
+  camelize,
+  capitalize,
+  toHandlerKey
+} from '@vue/shared'
 
 // For test-utils
 export { transformVNodeArgs } from './vnode'
@@ -247,12 +256,9 @@ export { transformVNodeArgs } from './vnode'
 // change without notice between versions. User code should never rely on them.
 
 import { createComponentInstance, setupComponent } from './component'
-import {
-  renderComponentRoot,
-  setCurrentRenderingInstance
-} from './componentRenderUtils'
+import { renderComponentRoot } from './componentRenderUtils'
+import { setCurrentRenderingInstance } from './componentRenderContext'
 import { isVNode, normalizeVNode } from './vnode'
-import { normalizeSuspenseChildren } from './components/Suspense'
 
 const _ssrUtils = {
   createComponentInstance,
@@ -260,8 +266,7 @@ const _ssrUtils = {
   renderComponentRoot,
   setCurrentRenderingInstance,
   isVNode,
-  normalizeVNode,
-  normalizeSuspenseChildren
+  normalizeVNode
 }
 
 /**

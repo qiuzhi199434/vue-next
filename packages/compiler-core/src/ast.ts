@@ -108,7 +108,7 @@ export interface RootNode extends Node {
   cached: number
   temps: number
   ssrHelpers?: symbol[]
-  codegenNode?: TemplateChildNode | JSChildNode | BlockStatement | undefined
+  codegenNode?: TemplateChildNode | JSChildNode | BlockStatement
 }
 
 export type ElementNode =
@@ -189,11 +189,23 @@ export interface DirectiveNode extends Node {
   parseResult?: ForParseResult
 }
 
+/**
+ * Static types have several levels.
+ * Higher levels implies lower levels. e.g. a node that can be stringified
+ * can always be hoisted and skipped for patch.
+ */
+export const enum ConstantTypes {
+  NOT_CONSTANT = 0,
+  CAN_SKIP_PATCH,
+  CAN_HOIST,
+  CAN_STRINGIFY
+}
+
 export interface SimpleExpressionNode extends Node {
   type: NodeTypes.SIMPLE_EXPRESSION
   content: string
   isStatic: boolean
-  isConstant: boolean
+  constType: ConstantTypes
   /**
    * Indicates this is an identifier for a hoist vnode call and points to the
    * hoisted node.
@@ -204,11 +216,6 @@ export interface SimpleExpressionNode extends Node {
    * the identifiers declared inside the function body.
    */
   identifiers?: string[]
-  /**
-   * some expressions (e.g. transformAssetUrls import identifiers) are constant,
-   * but cannot be stringified because they must be first evaluated at runtime.
-   */
-  isRuntimeConstant?: boolean
 }
 
 export interface InterpolationNode extends Node {
@@ -236,13 +243,14 @@ export interface CompoundExpressionNode extends Node {
 export interface IfNode extends Node {
   type: NodeTypes.IF
   branches: IfBranchNode[]
-  codegenNode?: IfConditionalExpression
+  codegenNode?: IfConditionalExpression | CacheExpression // <div v-if v-once>
 }
 
 export interface IfBranchNode extends Node {
   type: NodeTypes.IF_BRANCH
   condition: ExpressionNode | undefined // else
   children: TemplateChildNode[]
+  userKey?: AttributeNode | DirectiveNode
 }
 
 export interface ForNode extends Node {
@@ -281,7 +289,7 @@ export interface VNodeCall extends Node {
   dynamicProps: string | undefined
   directives: DirectiveArguments | undefined
   isBlock: boolean
-  isForBlock: boolean
+  disableTracking: boolean
 }
 
 // JS Node Types ---------------------------------------------------------------
@@ -492,7 +500,7 @@ export interface ForCodegenNode extends VNodeCall {
   props: undefined
   children: ForRenderListExpression
   patchFlag: string
-  isForBlock: true
+  disableTracking: boolean
 }
 
 export interface ForRenderListExpression extends CallExpression {
@@ -543,7 +551,7 @@ export function createVNodeCall(
   dynamicProps?: VNodeCall['dynamicProps'],
   directives?: VNodeCall['directives'],
   isBlock: VNodeCall['isBlock'] = false,
-  isForBlock: VNodeCall['isForBlock'] = false,
+  disableTracking: VNodeCall['disableTracking'] = false,
   loc = locStub
 ): VNodeCall {
   if (context) {
@@ -567,7 +575,7 @@ export function createVNodeCall(
     dynamicProps,
     directives,
     isBlock,
-    isForBlock,
+    disableTracking,
     loc
   }
 }
@@ -610,14 +618,14 @@ export function createSimpleExpression(
   content: SimpleExpressionNode['content'],
   isStatic: SimpleExpressionNode['isStatic'],
   loc: SourceLocation = locStub,
-  isConstant: boolean = false
+  constType: ConstantTypes = ConstantTypes.NOT_CONSTANT
 ): SimpleExpressionNode {
   return {
     type: NodeTypes.SIMPLE_EXPRESSION,
     loc,
-    isConstant,
     content,
-    isStatic
+    isStatic,
+    constType: isStatic ? ConstantTypes.CAN_STRINGIFY : constType
   }
 }
 

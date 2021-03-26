@@ -7,10 +7,11 @@ import {
   Renderer,
   HydrationRenderer,
   App,
-  RootHydrateFunction
+  RootHydrateFunction,
+  isRuntimeOnly
 } from '@vue/runtime-core'
 import { nodeOps } from './nodeOps'
-import { patchProp } from './patchProp'
+import { patchProp, forcePatchProp } from './patchProp'
 // Importing from the compiler, will be tree-shaken in prod
 import { isFunction, isString, isHTMLTag, isSVGTag, extend } from '@vue/shared'
 
@@ -21,16 +22,16 @@ declare module '@vue/reactivity' {
   }
 }
 
-const rendererOptions = extend({ patchProp }, nodeOps)
+const rendererOptions = extend({ patchProp, forcePatchProp }, nodeOps)
 
 // lazy create the renderer - this makes core renderer logic tree-shakable
 // in case the user only imports reactivity utilities from Vue.
-let renderer: Renderer | HydrationRenderer
+let renderer: Renderer<Element> | HydrationRenderer
 
 let enabledHydration = false
 
 function ensureRenderer() {
-  return renderer || (renderer = createRenderer(rendererOptions))
+  return renderer || (renderer = createRenderer<Node, Element>(rendererOptions))
 }
 
 function ensureHydrationRenderer() {
@@ -55,10 +56,11 @@ export const createApp = ((...args) => {
 
   if (__DEV__) {
     injectNativeTagCheck(app)
+    injectCustomElementCheck(app)
   }
 
   const { mount } = app
-  app.mount = (containerOrSelector: Element | string): any => {
+  app.mount = (containerOrSelector: Element | ShadowRoot | string): any => {
     const container = normalizeContainer(containerOrSelector)
     if (!container) return
     const component = app._component
@@ -67,8 +69,11 @@ export const createApp = ((...args) => {
     }
     // clear content before mounting
     container.innerHTML = ''
-    const proxy = mount(container)
-    container.removeAttribute('v-cloak')
+    const proxy = mount(container, false, container instanceof SVGElement)
+    if (container instanceof Element) {
+      container.removeAttribute('v-cloak')
+      container.setAttribute('data-v-app', '')
+    }
     return proxy
   }
 
@@ -80,13 +85,14 @@ export const createSSRApp = ((...args) => {
 
   if (__DEV__) {
     injectNativeTagCheck(app)
+    injectCustomElementCheck(app)
   }
 
   const { mount } = app
-  app.mount = (containerOrSelector: Element | string): any => {
+  app.mount = (containerOrSelector: Element | ShadowRoot | string): any => {
     const container = normalizeContainer(containerOrSelector)
     if (container) {
-      return mount(container, true)
+      return mount(container, true, container instanceof SVGElement)
     }
   }
 
@@ -102,16 +108,52 @@ function injectNativeTagCheck(app: App) {
   })
 }
 
-function normalizeContainer(container: Element | string): Element | null {
+// dev only
+function injectCustomElementCheck(app: App) {
+  if (isRuntimeOnly()) {
+    const value = app.config.isCustomElement
+    Object.defineProperty(app.config, 'isCustomElement', {
+      get() {
+        return value
+      },
+      set() {
+        warn(
+          `The \`isCustomElement\` config option is only respected when using the runtime compiler.` +
+            `If you are using the runtime-only build, \`isCustomElement\` must be passed to \`@vue/compiler-dom\` in the build setup instead` +
+            `- for example, via the \`compilerOptions\` option in vue-loader: https://vue-loader.vuejs.org/options.html#compileroptions.`
+        )
+      }
+    })
+  }
+}
+
+function normalizeContainer(
+  container: Element | ShadowRoot | string
+): Element | null {
   if (isString(container)) {
     const res = document.querySelector(container)
     if (__DEV__ && !res) {
-      warn(`Failed to mount app: mount target selector returned null.`)
+      warn(
+        `Failed to mount app: mount target selector "${container}" returned null.`
+      )
     }
     return res
   }
-  return container
+  if (
+    __DEV__ &&
+    container instanceof window.ShadowRoot &&
+    container.mode === 'closed'
+  ) {
+    warn(
+      `mounting on a ShadowRoot with \`{mode: "closed"}\` may lead to unpredictable bugs`
+    )
+  }
+  return container as any
 }
+
+// SFC CSS utilities
+export { useCssModule } from './helpers/useCssModule'
+export { useCssVars } from './helpers/useCssVars'
 
 // DOM-only components
 export { Transition, TransitionProps } from './components/Transition'

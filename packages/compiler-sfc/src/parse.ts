@@ -3,12 +3,15 @@ import {
   ElementNode,
   SourceLocation,
   CompilerError,
-  TextModes
+  TextModes,
+  BindingMetadata
 } from '@vue/compiler-core'
-import { RawSourceMap, SourceMapGenerator } from 'source-map'
-import { generateCodeFrame } from '@vue/shared'
-import { TemplateCompiler } from './compileTemplate'
 import * as CompilerDOM from '@vue/compiler-dom'
+import { RawSourceMap, SourceMapGenerator } from 'source-map'
+import { TemplateCompiler } from './compileTemplate'
+import { Statement } from '@babel/types'
+import { parseCssVars } from './cssVars'
+import { warnExperimental } from './warn'
 
 export interface SFCParseOptions {
   filename?: string
@@ -30,11 +33,15 @@ export interface SFCBlock {
 
 export interface SFCTemplateBlock extends SFCBlock {
   type: 'template'
-  functional?: boolean
+  ast: ElementNode
 }
 
 export interface SFCScriptBlock extends SFCBlock {
   type: 'script'
+  setup?: string | boolean
+  bindings?: BindingMetadata
+  scriptAst?: Statement[]
+  scriptSetupAst?: Statement[]
 }
 
 export interface SFCStyleBlock extends SFCBlock {
@@ -45,15 +52,21 @@ export interface SFCStyleBlock extends SFCBlock {
 
 export interface SFCDescriptor {
   filename: string
+  source: string
   template: SFCTemplateBlock | null
   script: SFCScriptBlock | null
+  scriptSetup: SFCScriptBlock | null
   styles: SFCStyleBlock[]
   customBlocks: SFCBlock[]
+  cssVars: string[]
+  // whether the SFC uses :slotted() modifier.
+  // this is used as a compiler optimization hint.
+  slotted: boolean
 }
 
 export interface SFCParseResult {
   descriptor: SFCDescriptor
-  errors: CompilerError[]
+  errors: (CompilerError | SyntaxError)[]
 }
 
 const SFC_CACHE_MAX_SIZE = 500
@@ -69,7 +82,7 @@ export function parse(
   source: string,
   {
     sourceMap = true,
-    filename = 'component.vue',
+    filename = 'anonymous.vue',
     sourceRoot = '',
     pad = false,
     compiler = CompilerDOM
@@ -84,13 +97,17 @@ export function parse(
 
   const descriptor: SFCDescriptor = {
     filename,
+    source,
     template: null,
     script: null,
+    scriptSetup: null,
     styles: [],
-    customBlocks: []
+    customBlocks: [],
+    cssVars: [],
+    slotted: false
   }
 
-  const errors: CompilerError[] = []
+  const errors: (CompilerError | SyntaxError)[] = []
   const ast = compiler.parse(source, {
     // there are no components at SFC parsing level
     isNativeTag: () => true,
@@ -102,13 +119,15 @@ export function parse(
       if (
         (!parent && tag !== 'template') ||
         // <template lang="xxx"> should also be treated as raw text
-        props.some(
-          p =>
-            p.type === NodeTypes.ATTRIBUTE &&
-            p.name === 'lang' &&
-            p.value &&
-            p.value.content !== 'html'
-        )
+        (tag === 'template' &&
+          props.some(
+            p =>
+              p.type === NodeTypes.ATTRIBUTE &&
+              p.name === 'lang' &&
+              p.value &&
+              p.value.content &&
+              p.value.content !== 'html'
+          ))
       ) {
         return TextModes.RAWTEXT
       } else {
@@ -124,36 +143,73 @@ export function parse(
     if (node.type !== NodeTypes.ELEMENT) {
       return
     }
-    if (!node.children.length && !hasSrc(node)) {
+    if (!node.children.length && !hasSrc(node) && node.tag !== 'template') {
       return
     }
     switch (node.tag) {
       case 'template':
         if (!descriptor.template) {
-          descriptor.template = createBlock(
+          const templateBlock = (descriptor.template = createBlock(
             node,
             source,
             false
-          ) as SFCTemplateBlock
+          ) as SFCTemplateBlock)
+          templateBlock.ast = node
         } else {
-          warnDuplicateBlock(source, filename, node)
+          errors.push(createDuplicateBlockError(node))
         }
         break
       case 'script':
-        if (!descriptor.script) {
-          descriptor.script = createBlock(node, source, pad) as SFCScriptBlock
-        } else {
-          warnDuplicateBlock(source, filename, node)
+        const scriptBlock = createBlock(node, source, pad) as SFCScriptBlock
+        const isSetup = !!scriptBlock.attrs.setup
+        if (isSetup && !descriptor.scriptSetup) {
+          descriptor.scriptSetup = scriptBlock
+          break
         }
+        if (!isSetup && !descriptor.script) {
+          descriptor.script = scriptBlock
+          break
+        }
+        errors.push(createDuplicateBlockError(node, isSetup))
         break
       case 'style':
-        descriptor.styles.push(createBlock(node, source, pad) as SFCStyleBlock)
+        const styleBlock = createBlock(node, source, pad) as SFCStyleBlock
+        if (styleBlock.attrs.vars) {
+          errors.push(
+            new SyntaxError(
+              `<style vars> has been replaced by a new proposal: ` +
+                `https://github.com/vuejs/rfcs/pull/231`
+            )
+          )
+        }
+        descriptor.styles.push(styleBlock)
         break
       default:
         descriptor.customBlocks.push(createBlock(node, source, pad))
         break
     }
   })
+
+  if (descriptor.scriptSetup) {
+    if (descriptor.scriptSetup.src) {
+      errors.push(
+        new SyntaxError(
+          `<script setup> cannot use the "src" attribute because ` +
+            `its syntax will be ambiguous outside of the component.`
+        )
+      )
+      descriptor.scriptSetup = null
+    }
+    if (descriptor.script && descriptor.script.src) {
+      errors.push(
+        new SyntaxError(
+          `<script> cannot use the "src" attribute when <script setup> is ` +
+            `also present because they must be processed together.`
+        )
+      )
+      descriptor.script = null
+    }
+  }
 
   if (sourceMap) {
     const genMap = (block: SFCBlock | null) => {
@@ -170,7 +226,20 @@ export function parse(
     genMap(descriptor.template)
     genMap(descriptor.script)
     descriptor.styles.forEach(genMap)
+    descriptor.customBlocks.forEach(genMap)
   }
+
+  // parse CSS vars
+  descriptor.cssVars = parseCssVars(descriptor)
+  if (descriptor.cssVars.length) {
+    warnExperimental(`v-bind() CSS variable injection`, 231)
+  }
+
+  // check if the SFC uses :slotted
+  const slottedRE = /(?:::v-|:)slotted\(/
+  descriptor.slotted = descriptor.styles.some(
+    s => s.scoped && slottedRE.test(s.content)
+  )
 
   const result = {
     descriptor,
@@ -180,22 +249,17 @@ export function parse(
   return result
 }
 
-function warnDuplicateBlock(
-  source: string,
-  filename: string,
-  node: ElementNode
-) {
-  const codeFrame = generateCodeFrame(
-    source,
-    node.loc.start.offset,
-    node.loc.end.offset
-  )
-  const location = `${filename}:${node.loc.start.line}:${node.loc.start.column}`
-  console.warn(
-    `Single file component can contain only one ${
-      node.tag
-    } element (${location}):\n\n${codeFrame}`
-  )
+function createDuplicateBlockError(
+  node: ElementNode,
+  isScriptSetup = false
+): CompilerError {
+  const err = new SyntaxError(
+    `Single file component can contain only one <${node.tag}${
+      isScriptSetup ? ` setup` : ``
+    }> element`
+  ) as CompilerError
+  err.loc = node.loc
+  return err
 }
 
 function createBlock(
@@ -239,8 +303,8 @@ function createBlock(
         } else if (p.name === 'module') {
           ;(block as SFCStyleBlock).module = attrs[p.name]
         }
-      } else if (type === 'template' && p.name === 'functional') {
-        ;(block as SFCTemplateBlock).functional = true
+      } else if (type === 'script' && p.name === 'setup') {
+        ;(block as SFCScriptBlock).setup = attrs.setup
       }
     }
   })

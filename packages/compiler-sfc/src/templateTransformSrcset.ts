@@ -1,12 +1,18 @@
 import path from 'path'
 import {
+  ConstantTypes,
   createCompoundExpression,
   createSimpleExpression,
   NodeTransform,
   NodeTypes,
   SimpleExpressionNode
 } from '@vue/compiler-core'
-import { isRelativeUrl, parseUrl, isExternalUrl } from './templateUtils'
+import {
+  isRelativeUrl,
+  parseUrl,
+  isExternalUrl,
+  isDataUrl
+} from './templateUtils'
 import {
   AssetURLOptions,
   defaultAssetUrlOptions
@@ -40,7 +46,7 @@ export const transformSrcset: NodeTransform = (
         if (attr.name === 'srcset' && attr.type === NodeTypes.ATTRIBUTE) {
           if (!attr.value) return
           const value = attr.value.content
-
+          if (!value) return
           const imageCandidates: ImageCandidate[] = value.split(',').map(s => {
             // The attribute value arrives here with all whitespace, except
             // normal spaces, represented by escape sequences
@@ -50,6 +56,15 @@ export const transformSrcset: NodeTransform = (
               .split(' ', 2)
             return { url, descriptor }
           })
+
+          // for data url need recheck url
+          for (let i = 0; i < imageCandidates.length; i++) {
+            if (imageCandidates[i].url.trim().startsWith('data:')) {
+              imageCandidates[i + 1].url =
+                imageCandidates[i].url + ',' + imageCandidates[i + 1].url
+              imageCandidates.splice(i, 1)
+            }
+          }
 
           // When srcset does not contain any relative URLs, skip transforming
           if (
@@ -78,13 +93,13 @@ export const transformSrcset: NodeTransform = (
           imageCandidates.forEach(({ url, descriptor }, index) => {
             if (
               !isExternalUrl(url) &&
+              !isDataUrl(url) &&
               (options.includeAbsolute || isRelativeUrl(url))
             ) {
               const { path } = parseUrl(url)
               let exp: SimpleExpressionNode
               if (path) {
-                const importsArray = Array.from(context.imports)
-                const existingImportsIndex = importsArray.findIndex(
+                const existingImportsIndex = context.imports.findIndex(
                   i => i.path === path
                 )
                 if (existingImportsIndex > -1) {
@@ -92,16 +107,16 @@ export const transformSrcset: NodeTransform = (
                     `_imports_${existingImportsIndex}`,
                     false,
                     attr.loc,
-                    true
+                    ConstantTypes.CAN_HOIST
                   )
                 } else {
                   exp = createSimpleExpression(
-                    `_imports_${importsArray.length}`,
+                    `_imports_${context.imports.length}`,
                     false,
                     attr.loc,
-                    true
+                    ConstantTypes.CAN_HOIST
                   )
-                  context.imports.add({ exp, path })
+                  context.imports.push({ exp, path })
                 }
                 compoundExpression.children.push(exp)
               }
@@ -110,7 +125,7 @@ export const transformSrcset: NodeTransform = (
                 `"${url}"`,
                 false,
                 attr.loc,
-                true
+                ConstantTypes.CAN_HOIST
               )
               compoundExpression.children.push(exp)
             }
@@ -125,7 +140,7 @@ export const transformSrcset: NodeTransform = (
           })
 
           const hoisted = context.hoist(compoundExpression)
-          hoisted.isRuntimeConstant = true
+          hoisted.constType = ConstantTypes.CAN_HOIST
 
           node.props[index] = {
             type: NodeTypes.DIRECTIVE,

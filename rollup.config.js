@@ -129,7 +129,7 @@ function createConfig(format, output, plugins = []) {
         [
           ...Object.keys(pkg.dependencies || {}),
           ...Object.keys(pkg.peerDependencies || {}),
-          ...['path', 'url'] // for @vue/compiler-sfc
+          ...['path', 'url', 'stream'] // for @vue/compiler-sfc / server-renderer
         ]
 
   // the browser builds of @vue/compiler-sfc requires postcss to be available
@@ -141,7 +141,7 @@ function createConfig(format, output, plugins = []) {
   const nodePlugins =
     packageOptions.enableNonBrowserBranches && format !== 'cjs'
       ? [
-          require('@rollup/plugin-node-resolve')({
+          require('@rollup/plugin-node-resolve').nodeResolve({
             preferBuiltins: true
           }),
           require('@rollup/plugin-commonjs')({
@@ -212,8 +212,13 @@ function createReplacePlugin(
     __ESM_BROWSER__: isBrowserESMBuild,
     // is targeting Node (SSR)?
     __NODE_JS__: isNodeBuild,
-    __FEATURE_OPTIONS__: true,
+
+    // feature flags
     __FEATURE_SUSPENSE__: true,
+    __FEATURE_OPTIONS_API__: isBundlerESMBuild ? `__VUE_OPTIONS_API__` : true,
+    __FEATURE_PROD_DEVTOOLS__: isBundlerESMBuild
+      ? `__VUE_PROD_DEVTOOLS__`
+      : false,
     ...(isProduction && isBrowserBuild
       ? {
           'context.onError(': `/*#__PURE__*/ context.onError(`,
@@ -230,7 +235,10 @@ function createReplacePlugin(
       replacements[key] = process.env[key]
     }
   })
-  return replace(replacements)
+  return replace({
+    values: replacements,
+    preventAssignment: true
+  })
 }
 
 function createProductionConfig(format) {
@@ -254,7 +262,8 @@ function createMinifiedConfig(format) {
         compress: {
           ecma: 2015,
           pure_getters: true
-        }
+        },
+        safari10: true
       })
     ]
   )

@@ -7,21 +7,22 @@ import {
   FunctionalComponent,
   defineComponent,
   ref,
-  serializeInner
+  serializeInner,
+  createApp,
+  provide,
+  inject,
+  watch
 } from '@vue/runtime-test'
 import { render as domRender, nextTick } from 'vue'
-import { mockWarn } from '@vue/shared'
 
 describe('component props', () => {
-  mockWarn()
-
   test('stateful', () => {
     let props: any
     let attrs: any
     let proxy: any
 
     const Comp = defineComponent({
-      props: ['fooBar'],
+      props: ['fooBar', 'barBaz'],
       render() {
         props = this.$props
         attrs = this.$attrs
@@ -42,13 +43,16 @@ describe('component props', () => {
     expect(attrs).toEqual({ bar: 3, baz: 4 })
 
     // test updating kebab-case should not delete it (#955)
-    render(h(Comp, { 'foo-bar': 3, bar: 3, baz: 4 }), root)
+    render(h(Comp, { 'foo-bar': 3, bar: 3, baz: 4, barBaz: 5 }), root)
     expect(proxy.fooBar).toBe(3)
-    expect(props).toEqual({ fooBar: 3 })
+    expect(proxy.barBaz).toBe(5)
+    expect(props).toEqual({ fooBar: 3, barBaz: 5 })
     expect(attrs).toEqual({ bar: 3, baz: 4 })
 
     render(h(Comp, { qux: 5 }), root)
     expect(proxy.fooBar).toBeUndefined()
+    // remove the props with camelCase key (#1412)
+    expect(proxy.barBaz).toBeUndefined()
     expect(props).toEqual({})
     expect(attrs).toEqual({ qux: 5 })
   })
@@ -211,6 +215,32 @@ describe('component props', () => {
     expect(defaultFn).toHaveBeenCalledTimes(1)
   })
 
+  test('using inject in default value factory', () => {
+    const Child = defineComponent({
+      props: {
+        test: {
+          default: () => inject('test', 'default')
+        }
+      },
+      setup(props) {
+        return () => {
+          return h('div', props.test)
+        }
+      }
+    })
+
+    const Comp = {
+      setup() {
+        provide('test', 'injected')
+        return () => h(Child)
+      }
+    }
+
+    const root = nodeOps.createElement('div')
+    render(h(Comp), root)
+    expect(serializeInner(root)).toBe(`<div>injected</div>`)
+  })
+
   test('optimized props updates', async () => {
     const Child = defineComponent({
       props: ['foo'],
@@ -266,6 +296,27 @@ describe('component props', () => {
       ;(instance!.proxy as any).foo = 2
     }).toThrow(TypeError)
     expect(`Attempting to mutate prop "foo"`).toHaveBeenWarned()
+    // should not throw when overriding properties other than props
+    expect(() => {
+      ;(instance!.proxy as any).hasOwnProperty = () => {}
+    }).not.toThrow(TypeError)
+  })
+
+  test('warn absent required props', () => {
+    const Comp = {
+      props: {
+        bool: { type: Boolean, required: true },
+        str: { type: String, required: true },
+        num: { type: Number, required: true }
+      },
+      setup() {
+        return () => null
+      }
+    }
+    render(h(Comp), nodeOps.createElement('div'))
+    expect(`Missing required prop: "bool"`).toHaveBeenWarned()
+    expect(`Missing required prop: "str"`).toHaveBeenWarned()
+    expect(`Missing required prop: "num"`).toHaveBeenWarned()
   })
 
   test('merging props from mixins and extends', () => {
@@ -308,5 +359,105 @@ describe('component props', () => {
     )
     expect(setupProps).toMatchObject(props)
     expect(renderProxy.$props).toMatchObject(props)
+  })
+
+  test('merging props from global mixins', () => {
+    let setupProps: any
+    let renderProxy: any
+
+    const M1 = {
+      props: ['m1']
+    }
+    const M2 = {
+      props: { m2: null }
+    }
+    const Comp = {
+      props: ['self'],
+      setup(props: any) {
+        setupProps = props
+      },
+      render(this: any) {
+        renderProxy = this
+        return h('div', [this.self, this.m1, this.m2])
+      }
+    }
+
+    const props = {
+      self: 'from self, ',
+      m1: 'from mixin 1, ',
+      m2: 'from mixin 2'
+    }
+    const app = createApp(Comp, props)
+    app.mixin(M1)
+    app.mixin(M2)
+
+    const root = nodeOps.createElement('div')
+    app.mount(root)
+
+    expect(serializeInner(root)).toMatch(
+      `from self, from mixin 1, from mixin 2`
+    )
+    expect(setupProps).toMatchObject(props)
+    expect(renderProxy.$props).toMatchObject(props)
+  })
+
+  test('props type support BigInt', () => {
+    const Comp = {
+      props: {
+        foo: BigInt
+      },
+      render(this: any) {
+        return h('div', [this.foo])
+      }
+    }
+
+    const root = nodeOps.createElement('div')
+    render(
+      h(Comp, {
+        foo: BigInt(BigInt(100000111)) + BigInt(2000000000) * BigInt(30000000)
+      }),
+      root
+    )
+
+    expect(serializeInner(root)).toMatch('<div>60000000100000111</div>')
+  })
+
+  // #3474
+  test('should cache the value returned from the default factory to avoid unnecessary watcher trigger', async () => {
+    let count = 0
+    const Comp = {
+      props: {
+        foo: {
+          type: Object,
+          default: () => ({ val: 1 })
+        },
+        bar: Number
+      },
+      setup(props: any) {
+        watch(
+          () => props.foo,
+          () => {
+            count++
+          }
+        )
+        return () => h('h1', [props.foo.val, props.bar])
+      }
+    }
+
+    const foo = ref()
+    const bar = ref(0)
+    const app = createApp({
+      render: () => h(Comp, { foo: foo.value, bar: bar.value })
+    })
+
+    const root = nodeOps.createElement('div')
+    app.mount(root)
+    expect(serializeInner(root)).toMatch(`<h1>10</h1>`)
+    expect(count).toBe(0)
+
+    bar.value++
+    await nextTick()
+    expect(serializeInner(root)).toMatch(`<h1>11</h1>`)
+    expect(count).toBe(0)
   })
 })

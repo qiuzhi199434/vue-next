@@ -11,7 +11,12 @@ import {
   CompilerOptions,
   IfStatement,
   CallExpression,
-  isText
+  isText,
+  processExpression,
+  createSimpleExpression,
+  createCompoundExpression,
+  createTransformContext,
+  createRoot
 } from '@vue/compiler-dom'
 import { isString, escapeHtml } from '@vue/shared'
 import { SSR_INTERPOLATE, ssrHelpers } from './runtimeHelpers'
@@ -30,6 +35,20 @@ import { createSSRCompilerError, SSRErrorCodes } from './errors'
 
 export function ssrCodegenTransform(ast: RootNode, options: CompilerOptions) {
   const context = createSSRTransformContext(ast, options)
+
+  // inject SFC <style> CSS variables
+  // we do this instead of inlining the expression to ensure the vars are
+  // only resolved once per render
+  if (options.ssrCssVars) {
+    const varsExp = processExpression(
+      createSimpleExpression(options.ssrCssVars, false),
+      createTransformContext(createRoot([]), options)
+    )
+    context.body.push(
+      createCompoundExpression([`const _cssVars = { style: `, varsExp, `}`])
+    )
+  }
+
   const isFragment =
     ast.children.length > 1 && ast.children.some(c => !isText(c))
   processChildren(ast.children, context, isFragment)
@@ -37,10 +56,11 @@ export function ssrCodegenTransform(ast: RootNode, options: CompilerOptions) {
 
   // Finalize helpers.
   // We need to separate helpers imported from 'vue' vs. '@vue/server-renderer'
-  ast.ssrHelpers = [
+  ast.ssrHelpers = Array.from(new Set([  
     ...ast.helpers.filter(h => h in ssrHelpers),
     ...context.helpers
-  ]
+  ]))
+  
   ast.helpers = ast.helpers.filter(h => !(h in ssrHelpers))
 }
 
@@ -109,7 +129,8 @@ function createChildContext(
 export function processChildren(
   children: TemplateChildNode[],
   context: SSRTransformContext,
-  asFragment = false
+  asFragment = false,
+  disableNestedFragments = false
 ) {
   if (asFragment) {
     context.pushStringPart(`<!--[-->`)
@@ -157,10 +178,10 @@ export function processChildren(
         )
         break
       case NodeTypes.IF:
-        ssrProcessIf(child, context)
+        ssrProcessIf(child, context, disableNestedFragments)
         break
       case NodeTypes.FOR:
-        ssrProcessFor(child, context)
+        ssrProcessFor(child, context, disableNestedFragments)
         break
       case NodeTypes.IF_BRANCH:
         // no-op - handled by ssrProcessIf
